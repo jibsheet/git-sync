@@ -316,42 +316,48 @@ sub sync_all_github {
 
     my @accounts = ref $config{github} ? @{$config{github}} : ($config{github});
     for my $acct (@accounts) {
-        my $data = github("users/$acct/repos", $config{login}, $config{token}) or next;
+        my $page = 1;
+        my $type = $config{organization} ? "orgs" : "users";
 
-        for my $repo (@{$data || []}) {
-            my $reponame = $repo->{name};
-            my $root = "$config{into}/$reponame";
+        while ( my $data = github("$type/$acct/repos", $config{login}, $config{token}, $page) ) {
+            last unless @{$data || []};
 
-            printf "  %-40s ", $reponame;
-            next if already($root => 1);
-            if (-e $root) {
-                add_github_remotes(
-                    %config,
-                    account => $acct,
-                    repository => $reponame,
-                    fetch => 0,
-                ) if $config{network};
-                update($root, 1);
-            } else {
-                my $auth = 1;
-                if ($config{login}) {
-                    my $data = github("repos/$acct/$reponame/collaborators");
-                    $auth = 0 if $data and not grep {$_->{login} eq $config{login}} @{$data};
+            for my $repo (@{$data || []}) {
+                my $reponame = $repo->{name};
+                my $root = "$config{into}/$reponame";
+
+                printf "  %-40s ", $reponame;
+                next if already($root => 1);
+                if (-e $root) {
+                    add_github_remotes(
+                        %config,
+                        account => $acct,
+                        repository => $reponame,
+                        fetch => 0,
+                    ) if $config{network};
+                    update($root, 1);
+                } else {
+                    my $auth = 1;
+    #                if ($config{login}) {
+    #                    my $data = github("repos/$acct/$reponame/collaborators");
+    #                    $auth = 0 if $data and not grep {$_->{login} eq $config{login}} @{$data};
+    #                }
+                    if ($auth) {
+                        $auth = clone($root => "git\@github.com:$acct/$reponame.git" => $config{email});
+                        printf "  %-40s ", "...trying again, anonymously" unless $auth;
+                    }
+                    unless ($auth) {
+                        clone($root => "git://github.com/$acct/$reponame.git" => $config{email});
+                    }
+                    add_github_remotes(
+                        %config,
+                        account => $acct,
+                        repository => $reponame,
+                        fetch => 1,
+                    ) if $config{network};
                 }
-                if ($auth) {
-                    $auth = clone($root => "git\@github.com:$acct/$reponame.git" => $config{email});
-                    printf "  %-40s ", "...trying again, anonymously" unless $auth;
-                }
-                unless ($auth) {
-                    clone($root => "git://github.com/$acct/$reponame.git" => $config{email});
-                }
-                add_github_remotes(
-                    %config,
-                    account => $acct,
-                    repository => $reponame,
-                    fetch => 1,
-                ) if $config{network};
             }
+            $page++;
         }
     }
 }
@@ -660,7 +666,7 @@ sub get_json_decoder {
 
 our $UA = undef;
 sub github {
-    my ($url, $login, $token) = @_;
+    my ($url, $login, $token, $page) = @_;
     $UA ||= LWP::UserAgent->new(
         agent => "git-sync/$VERSION",
         env_proxy => 1,
@@ -668,7 +674,9 @@ sub github {
     );
 
     $url = ($url =~ m|^https?://| ? $url : "https://api.github.com/$url?");
-    $url .= "access_token=$token" if $token;
+    $url .= "access_token=$token&" if $token;
+    $url .= "page=$page" if $page;
+    
 
     my $response = $UA->get($url);
     print colored("  GET of $url failed!\n", "bold red")
